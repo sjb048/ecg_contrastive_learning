@@ -5,7 +5,9 @@ This is a pytorch implementation using ptbxl data
 Required Installation :
 
 !pip install scipy
+
 !pip install wfdb
+
 !pip install pywavelets
 
 
