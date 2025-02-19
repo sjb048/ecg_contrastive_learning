@@ -3,11 +3,7 @@ Exploring Unsupervised Contrastive Learning Methods for ECG Analysis: Experiment
 This is a pytorch implementation using ptbxl data
 
 Required Installation :
+!pip install torch torchvision torchaudio pandas scikit-learn wfdb scipy pywavelets
 
-!pip install scipy
-
-!pip install wfdb
-
-!pip install pywavelets
 
 
