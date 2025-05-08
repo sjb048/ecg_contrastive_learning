@@ -1,4 +1,4 @@
-import os, random, time, gc, ast, logging
+import os, random, time, gc, ast, logging, csv
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -27,7 +27,7 @@ from utils_umap import (
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+log_rows = []
 # At start of main pipeline
 full_df = pd.read_csv('../data/ptbxl_database.csv')
 train_df = full_df[full_df.strat_fold.isin([1,2,3,4,5,6,7,8])]  # Official training folds
@@ -295,6 +295,9 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
         total_loss = 0.0
         num_steps = 0
         for i, (batch_data,) in enumerate(dataloader):
+            if isinstance(batch_data, (tuple, list)):
+              batch_data = batch_data[0]
+
             data_time.update(time.time() - end)
             batch_data = batch_data.to(device)
             im_q = augment_ecg(batch_data, crop_size=1000, noise_std=0.01)
@@ -314,6 +317,16 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
             num_steps += 1
             batch_time.update(time.time() - end)
             end = time.time()
+            log_rows.append({
+                "epoch": epoch + 1,
+                "batch": i,
+                "time": batch_time.val,
+                "data": data_time.val,
+                "loss": losses.val,
+                "acc1": top1.val.item(),
+                "acc5": top5.val.item()
+            })
+
             if i % 10 == 0:
                 progress.display(i)
         scheduler.step()
@@ -321,10 +334,16 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
         wandb.log({"epoch": epoch+1, "moco_loss": avg_loss, "moco_acc@1": top1.avg, "moco_acc@5": top5.avg})
         print(f"[Epoch {epoch+1}/{epochs}]  Loss: {avg_loss:.4f}")
         # print(f"[Epoch {epoch+1}/{epochs}]  Loss: {avg_loss:.4f}")
+        print(viz_methods)
         # Show t-SNE plot every 20 epochs
         if (epoch + 1) % viz_interval == 0:
             visualize_embeddings(model, ecg_tensor, epoch+1, batch_size, device, viz_methods)
-        
+    log_path = f"moco_logs_500records_epoch_{epoch+1}.csv"
+    with open(log_path, mode='w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
+        writer.writeheader()
+        writer.writerows(log_rows)
+    print(f"Batch-wise metrics saved to: {log_path}")
     torch.save(model.state_dict(), 'improved_moco_ecg_model_test.pth')
     print("MoCo model saved to 'improved_moco_ecg_model_test.pth'.")
 
@@ -348,6 +367,8 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     
     # Convert to numpy
     emb_np = embeddings.numpy()
+    # emb_np = embeddings.detach().cpu().numpy()
+
     
     # Check for NaNs - critical before visualization
     if np.isnan(emb_np).any():
@@ -359,8 +380,7 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     if np.any(var > 0):
         emb_filtered = emb_np[:, var > 0]
     else:
-        # Fallback: keep original but add small noise to avoid singular matrices
-        emb_filtered = emb_np + np.random.normal(0, 1e-6, emb_np.shape)
+        emb_filtered = emb_np + np.random.normal(0, 1e-6, emb_np.shape)# Fallback: keep original but add small noise to avoid singular matrices
     
     # Standardize using RobustScaler (handles outliers better than StandardScaler)
     emb_scaled = RobustScaler().fit_transform(emb_filtered)
@@ -387,7 +407,7 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     # Add garbage collection after intensive memory operations
     gc.collect()
     torch.cuda.empty_cache()
-
+    print("train will be called")
     # Switch back to training mode
     model.train()
 
@@ -397,7 +417,7 @@ def create_ecg_dataloader(ecg_tensor, batch_size=32, shuffle=True):
 
 # --- LABELED DATASET FOR SUPERISED FINETUNING ---
 class PTBXLDataset(Dataset):
-    def __init__(self, csv_path, root_dir, use_lr=True, folds=None, 
+    def __init__(self, csv_path, root_dir, use_lr=False, folds=None, 
                  is_unlabeled=False,
                  transform=None):
 
@@ -426,8 +446,8 @@ class PTBXLDataset(Dataset):
         missing = required_cols - set(self.df.columns)
         if missing:
             raise ValueError(f"CSV missing required columns: {missing}")
-        data_dir = 'records500' 
-        # data_dir = 'records100' if self.use_lr else 'records500'
+        # data_dir = 'records500' 
+        data_dir = 'records100' if self.use_lr else 'records500'
         print (data_dir)
         full_path = os.path.join(self.root_dir, data_dir)
         if not os.path.exists(full_path):
@@ -435,7 +455,9 @@ class PTBXLDataset(Dataset):
 
     def _filter_missing_files(self):
         invalid_rows = []
+        # filename_col = filename_lr
         filename_col = 'filename_lr' if self.use_lr else 'filename_hr'
+        print (filename_col)
 
         for idx, row in self.df.iterrows():
             wfdb_path = os.path.join(self.root_dir, row[filename_col])
@@ -482,46 +504,95 @@ class PTBXLDataset(Dataset):
             torch.tensor(record['label'], dtype=torch.long)
         )
 
-def create_dataloaders(dataset, batch_size=8, test_size=0.2, random_seed=42,
-                       num_workers=0, pin_memory=False):
-     # Special case: if test_size is 0, use all data for training
-    if test_size == 0:
-        train_loader = DataLoader(
-            dataset, 
-            batch_size=batch_size, 
-            shuffle=True, 
-            num_workers=8,
-            pin_memory=True
-        )
-        # Create a dummy validation loader with a single sample to maintain the expected return format
-        dummy_idx = [0] if len(dataset) > 0 else []
-        dummy_subset = Subset(dataset, dummy_idx)
-        val_loader = DataLoader(
-            dummy_subset, 
-            batch_size=batch_size, 
-            shuffle=False, 
-            num_workers=4
-        )
-        return train_loader, val_loader
+def train_classifier_with_comparison(
+                model,
+                train_loader,
+                val_loader,
+                device="cpu",
+                epochs=60,
+                lr=1e-4,
+                eval_every=20, 
+                metric_for_lr="f1_score",
+                
+                min_delta=1e-3,
+                lr_factor=0.5,
+                improvement_epsilon=0.0  # Set a margin if needed
+            ):
     
-    #handled for small dataset label
-    if isinstance(dataset, Subset):
-        stratify_labels = dataset.dataset.df["label"].iloc[dataset.indices]
-    else:
-        stratify_labels = dataset.df["label"]
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    best_metric = -float("inf")     
+    step_tag   = lambda ep: f"ep{ep:03d}"
+    model.to(device)
 
-    train_idx, val_idx = train_test_split(
-        range(len(dataset)),
-        test_size=test_size,
-        random_state=random_seed,
-        stratify=stratify_labels
-    )
-    train_subset = Subset(dataset, train_idx)
-    val_subset = Subset(dataset, val_idx)
-    
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=4)
-    return train_loader, val_loader
+    current_val_accuracy = None
+
+    for epoch in range(epochs):
+        model.train()
+        train_loss, train_correct, train_total = 0.0, 0, 0
+        for ecg_batch, labels_batch in train_loader:
+            ecg_batch = ecg_batch.to(device, non_blocking=True)
+            labels_batch = labels_batch.to(device, non_blocking=True)
+            
+            # Use memory-efficient forward/backward
+            with torch.cuda.amp.autocast():
+                outputs = model(ecg_batch)
+                loss = criterion(outputs, labels_batch)
+
+           # Gradient accumulation friendly backward
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+           
+
+            train_loss += loss.item() * ecg_batch.size(0)
+            _, preds = torch.max(outputs, 1)
+            train_correct += (preds == labels_batch).sum().item()
+            train_total += labels_batch.size(0)
+
+             # Memory cleanup
+            del ecg_batch, labels_batch, outputs
+            torch.cuda.empty_cache()
+
+        train_epoch_loss = train_loss / train_total
+        train_epoch_acc = train_correct / train_total
+        # print(f"Epoch [{epoch+1}/{epochs}] Train Loss: {train_epoch_loss:.4f}, Train Acc: {train_epoch_acc:.4f}")
+          # Log training metrics for this epoch
+        wandb.log({"classifier_epoch": epoch+1, "train_loss": train_epoch_loss, "train_acc": train_epoch_acc})
+
+        print(f"Epoch [{epoch+1}/{epochs}] Train Loss: {train_epoch_loss:.4f}, Train Acc: {train_epoch_acc:.4f}")
+
+        # Validate at the designated epoch
+       
+        if (epoch+1) % eval_every == 0:
+            model.eval()
+            val_metrics = evaluate_metrics(model, val_loader, device=device)
+            current_val_accuracy = val_metrics['accuracy']
+            wandb.log({
+                "val_acc_20": val_metrics['accuracy'],
+                "val_prec_20": val_metrics['precision'],
+                "val_recall_20": val_metrics['recall'],
+                "val_f1_20": val_metrics['f1_score'],
+                "classifier_epoch": epoch + 1
+            })
+            log_confusion_matrix(val_metrics["ground_truth"], 
+                               val_metrics["predictions"],
+                               step_tag=step_tag(epoch+1),
+                               show_local=False)
+            
+            # adaptive learning rate if validation metric does not improve
+            current = val_metrics[metric_for_lr]
+            if current < best_metric + min_delta:
+                # no meaningful improvement → shrink LR
+                for pg in optimizer.param_groups:
+                    pg["lr"] *= lr_factor  # FIXED: use lr_factor parameter
+                print(f"↳ metric did not improve ≥ {min_delta:.4g}; "
+                    f"reducing LR by {lr_factor} → {optimizer.param_groups[0]['lr']:.2e}")
+            else:
+                best_metric = current
+           
+    return best_metric
 
 def official_evaluation(
     encoder, 
@@ -531,8 +602,8 @@ def official_evaluation(
     test_fold=[10],  # Official test fold
     # num_folds=5,
     batch_size=64,
-    epochs=100,
-    eval_every=10
+    epochs=60,
+    eval_every=20
 ):
    
     """Optimized 5-fold cross-validation with PTB-XL best practices."""
@@ -627,95 +698,6 @@ def official_evaluation(
     return test_metrics
     
 
-def train_classifier_with_comparison(
-                model,
-                train_loader,
-                val_loader,
-                device="cpu",
-                epochs=100,
-                lr=1e-4,
-                eval_every=10, 
-                metric_for_lr="f1_score",
-                
-                min_delta=1e-3,
-                lr_factor=0.5,
-                improvement_epsilon=0.0  # Set a margin if needed
-            ):
-    
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    best_metric = -float("inf")     
-    step_tag   = lambda ep: f"ep{ep:03d}"
-    model.to(device)
-
-    current_val_accuracy = None
-
-    for epoch in range(epochs):
-        model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
-        for ecg_batch, labels_batch in train_loader:
-            ecg_batch = ecg_batch.to(device, non_blocking=True)
-            labels_batch = labels_batch.to(device, non_blocking=True)
-            
-            # Use memory-efficient forward/backward
-            with torch.cuda.amp.autocast():
-                outputs = model(ecg_batch)
-                loss = criterion(outputs, labels_batch)
-
-           # Gradient accumulation friendly backward
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-
-           
-
-            train_loss += loss.item() * ecg_batch.size(0)
-            _, preds = torch.max(outputs, 1)
-            train_correct += (preds == labels_batch).sum().item()
-            train_total += labels_batch.size(0)
-
-             # Memory cleanup
-            del ecg_batch, labels_batch, outputs
-            torch.cuda.empty_cache()
-
-        train_epoch_loss = train_loss / train_total
-        train_epoch_acc = train_correct / train_total
-        # print(f"Epoch [{epoch+1}/{epochs}] Train Loss: {train_epoch_loss:.4f}, Train Acc: {train_epoch_acc:.4f}")
-          # Log training metrics for this epoch
-        wandb.log({"classifier_epoch": epoch+1, "train_loss": train_epoch_loss, "train_acc": train_epoch_acc})
-
-        print(f"Epoch [{epoch+1}/{epochs}] Train Loss: {train_epoch_loss:.4f}, Train Acc: {train_epoch_acc:.4f}")
-
-        # Validate at the designated epoch
-       
-        if (epoch+1) % eval_every == 0:
-            model.eval()
-            val_metrics = evaluate_metrics(model, val_loader, device=device)
-            current_val_accuracy = val_metrics['accuracy']
-            wandb.log({
-                "val_acc_20": val_metrics['accuracy'],
-                "val_prec_20": val_metrics['precision'],
-                "val_recall_20": val_metrics['recall'],
-                "val_f1_20": val_metrics['f1_score'],
-                "classifier_epoch": epoch + 1
-            })
-            log_confusion_matrix(val_metrics["ground_truth"], 
-                               val_metrics["predictions"],
-                               step_tag=step_tag(epoch+1),
-                               show_local=False)
-            
-            # adaptive learning rate if validation metric does not improve
-            current = val_metrics[metric_for_lr]
-            if current < best_metric + min_delta:
-                # no meaningful improvement → shrink LR
-                for pg in optimizer.param_groups:
-                    pg["lr"] *= lr_factor  # FIXED: use lr_factor parameter
-                print(f"↳ metric did not improve ≥ {min_delta:.4g}; "
-                    f"reducing LR by {lr_factor} → {optimizer.param_groups[0]['lr']:.2e}")
-            else:
-                best_metric = current
-           
-    return best_metric
 
 def evaluate_metrics(model, dataloader, device='cpu'):
     """
@@ -766,15 +748,9 @@ if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
 
     # Phase 1: MoCo Pre-training
-    wandb.init(project="ECG-MoCo-final_500", name="pretrain")
+    wandb.init(project="ECG-MoCo-umap_500_final", name="pretrain")
     # Load unlabeled data using official training folds
-    unlabeled_ds = PTBXLDataset(
-        csv_path='../data/ptbxl_database.csv',
-        root_dir='../data',
-        use_lr=False,
-        folds=list(range(1,9)),  # Official unlabeled folds
-        is_unlabeled=True
-    )
+    
     unlabeled_df, skipped = load_and_segment_signals_1d_no_folder_limit(
        
         csv_file='../data/ptbxl_database.csv',
@@ -803,6 +779,7 @@ if __name__ == "__main__":
         ecg_tensor = ecg_tensor,
         epochs = 100,
         batch_size = 32,
+        viz_methods = ['umap'],
         device = device
     )
     # ... training code ...
@@ -811,26 +788,28 @@ if __name__ == "__main__":
     # Phase 2: Fine-tuning 
     # Official supervised splits
     wandb.init(
-        project="ECG-MoCo-final_500",
+        project="ECG-MoCo-umap_500_final",
         name="finetune",
         config={
             "phase": "supervised_fine_tuning",
             "epochs": 100,
             "lr": 1e-4,
             "batch_size": 64,
-            "eval_every": 10
+            "eval_every": 20
         }
     )
 
     train_ds = PTBXLDataset(
         csv_path='../data/ptbxl_database.csv',
         root_dir='../data',
+        use_lr=False,
         folds=list(range(1,9)),  # Official training folds
         is_unlabeled=False  # Default behavior
     )
     val_ds = PTBXLDataset(
         csv_path='../data/ptbxl_database.csv',
         root_dir='../data',
+        use_lr=False,
         folds=[9]  # Official validation fold
     )
     # Create DataLoaders with proper parameters
@@ -861,9 +840,9 @@ if __name__ == "__main__":
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        epochs=100,
+        epochs=60,
         lr=1e-4,
-        eval_every=10
+        eval_every=20
     )
 
     # Log final metrics
@@ -877,7 +856,7 @@ if __name__ == "__main__":
     
 
     # Phase 3: Evaluation
-    wandb.init(project="ECG-MoCo-final_500", name="evaluation")
+    wandb.init(project="ECG-MoCo-umap_500_final", name="evaluation")
     final_metrics = official_evaluation(
         encoder=moco_model.encoder_q,
         labeled_csv='../data/ptbxl_database.csv',
@@ -885,7 +864,7 @@ if __name__ == "__main__":
         device=device,
         test_fold=[10],  # Official test fold
         batch_size=64,
-        epochs=100
+        epochs=60
     )
     
     wandb.log(final_metrics)

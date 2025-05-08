@@ -1,4 +1,4 @@
-import os, random, time, gc, ast, logging
+import os, random, time, gc, ast, logging, csv
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -28,6 +28,7 @@ from utils_umap import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+log_rows = [] 
 # At start of main pipeline
 full_df = pd.read_csv('../data/ptbxl_database.csv')
 train_df = full_df[full_df.strat_fold.isin([1,2,3,4,5,6,7,8])]  # Official training folds
@@ -38,7 +39,7 @@ test_df = full_df[full_df.strat_fold == 10]                     # Official test 
 def load_and_segment_signals_1d_no_folder_limit(
     csv_file,
     base_dir,
-    filename_col='filename_hr',
+    filename_col='filename_lr', #records100 used for low resolution
     max_files=5000,
     segment_length=1000,
     fs=125.0,
@@ -295,6 +296,9 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
         total_loss = 0.0
         num_steps = 0
         for i, (batch_data,) in enumerate(dataloader):
+            if isinstance(batch_data, (tuple, list)):
+              batch_data = batch_data[0]
+
             data_time.update(time.time() - end)
             batch_data = batch_data.to(device)
             im_q = augment_ecg(batch_data, crop_size=1000, noise_std=0.01)
@@ -314,17 +318,34 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
             num_steps += 1
             batch_time.update(time.time() - end)
             end = time.time()
+            log_rows.append({
+                "epoch": epoch + 1,
+                "batch": i,
+                "time": batch_time.val,
+                "data": data_time.val,
+                "loss": losses.val,
+                "acc1": top1.val.item(),
+                "acc5": top5.val.item()
+            })
+
             if i % 10 == 0:
                 progress.display(i)
         scheduler.step()
         avg_loss = total_loss / num_steps
         wandb.log({"epoch": epoch+1, "moco_loss": avg_loss, "moco_acc@1": top1.avg, "moco_acc@5": top5.avg})
         print(f"[Epoch {epoch+1}/{epochs}]  Loss: {avg_loss:.4f}")
+        print(viz_methods);
         # print(f"[Epoch {epoch+1}/{epochs}]  Loss: {avg_loss:.4f}")
         # Show t-SNE plot every 20 epochs
         if (epoch + 1) % viz_interval == 0:
             visualize_embeddings(model, ecg_tensor, epoch+1, batch_size, device, viz_methods)
-        
+    
+    log_path = f"moco_logs_100records_epoch_{epoch+1}.csv"
+    with open(log_path, mode='w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
+        writer.writeheader()
+        writer.writerows(log_rows)
+    print(f"Batch-wise metrics saved to: {log_path}")
     torch.save(model.state_dict(), 'improved_moco_ecg_model_test.pth')
     print("MoCo model saved to 'improved_moco_ecg_model_test.pth'.")
 
@@ -359,7 +380,6 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     if np.any(var > 0):
         emb_filtered = emb_np[:, var > 0]
     else:
-        # Fallback: keep original but add small noise to avoid singular matrices
         emb_filtered = emb_np + np.random.normal(0, 1e-6, emb_np.shape)
     
     # Standardize using RobustScaler (handles outliers better than StandardScaler)
@@ -387,9 +407,10 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     # Add garbage collection after intensive memory operations
     gc.collect()
     torch.cuda.empty_cache()
-
+    print("train will be called")
     # Switch back to training mode
     model.train()
+
 
 def create_ecg_dataloader(ecg_tensor, batch_size=32, shuffle=True):
     dataset = TensorDataset(ecg_tensor)
@@ -426,6 +447,7 @@ class PTBXLDataset(Dataset):
         missing = required_cols - set(self.df.columns)
         if missing:
             raise ValueError(f"CSV missing required columns: {missing}")
+        # data_dir = 'records100'
         data_dir = 'records100' if self.use_lr else 'records500'
         print (data_dir)
         full_path = os.path.join(self.root_dir, data_dir)
@@ -435,6 +457,7 @@ class PTBXLDataset(Dataset):
     def _filter_missing_files(self):
         invalid_rows = []
         filename_col = 'filename_lr' if self.use_lr else 'filename_hr'
+        print (filename_col)
 
         for idx, row in self.df.iterrows():
             wfdb_path = os.path.join(self.root_dir, row[filename_col])
@@ -459,7 +482,8 @@ class PTBXLDataset(Dataset):
 
     def __getitem__(self, idx):
         record = self.df.iloc[idx]
-        filename_col = 'filename_lr' if self.use_lr else 'filename_hr'
+        filename_col = 'filename_lr'
+        # filename_col = 'filename_lr' if self.use_lr else 'filename_hr'
         wfdb_path = os.path.join(self.root_dir, record[filename_col])
         try:
             signals, _ = wfdb.rdsamp(wfdb_path)
@@ -481,159 +505,15 @@ class PTBXLDataset(Dataset):
             torch.tensor(record['label'], dtype=torch.long)
         )
 
-def create_dataloaders(dataset, batch_size=8, test_size=0.2, random_seed=42,
-                       num_workers=0, pin_memory=False):
-     # Special case: if test_size is 0, use all data for training
-    if test_size == 0:
-        train_loader = DataLoader(
-            dataset, 
-            batch_size=batch_size, 
-            shuffle=True, 
-            num_workers=8,
-            pin_memory=True
-        )
-        # Create a dummy validation loader with a single sample to maintain the expected return format
-        dummy_idx = [0] if len(dataset) > 0 else []
-        dummy_subset = Subset(dataset, dummy_idx)
-        val_loader = DataLoader(
-            dummy_subset, 
-            batch_size=batch_size, 
-            shuffle=False, 
-            num_workers=4
-        )
-        return train_loader, val_loader
-    
-    #handled for small dataset label
-    if isinstance(dataset, Subset):
-        stratify_labels = dataset.dataset.df["label"].iloc[dataset.indices]
-    else:
-        stratify_labels = dataset.df["label"]
-
-    train_idx, val_idx = train_test_split(
-        range(len(dataset)),
-        test_size=test_size,
-        random_state=random_seed,
-        stratify=stratify_labels
-    )
-    train_subset = Subset(dataset, train_idx)
-    val_subset = Subset(dataset, val_idx)
-    
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=4)
-    return train_loader, val_loader
-
-def official_evaluation(
-    encoder, 
-    labeled_csv, 
-    labeled_root, 
-    device,
-    test_fold=[10],  # Official test fold
-    # num_folds=5,
-    batch_size=64,
-    epochs=40,
-    eval_every=10
-):
-   
-    """Optimized 5-fold cross-validation with PTB-XL best practices."""
-    # Official PTB-XL splits
-    TRAIN_FOLDS = list(range(1, 9))  # Folds 1-8
-    VAL_FOLD = [9]
-    TEST_FOLD = test_fold
-
-   
-    # =================================================================
-    # 1. Prepare Official Splits
-    # =================================================================
-    # Training data (folds 1-8)
-    # Create full dataset once
-    train_ds = PTBXLDataset(
-        csv_path=labeled_csv,
-        root_dir=labeled_root,
-        use_lr=False,
-        folds=TRAIN_FOLDS
-    )
-    # Validation data (fold 9)
-    val_ds = PTBXLDataset(
-        csv_path=labeled_csv,
-        root_dir=labeled_root,
-        use_lr=False,
-        folds=[9]  # Official validation fold
-    )
-    # Test data (fold 10)
-    test_ds = PTBXLDataset(
-        csv_path=labeled_csv,
-        root_dir=labeled_root,
-        use_lr=False,
-        folds=TEST_FOLD
-    )
-    # =================================================================
-    # 2. Create DataLoaders with Optimal Parameters
-    # =================================================================
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
-    )
-    
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=batch_size*2,
-        shuffle=False,
-        num_workers=2
-    )
-    
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size*2,
-        shuffle=False,
-        num_workers=2
-    )
-
-    # After dataset creation
-    wandb.log({
-        "train_class_dist": wandb.Histogram(train_ds.df['label']),
-        "test_class_dist": wandb.Histogram(test_ds.df['label'])
-    })
-
-     # =================================================================
-    # 3. Train Classifier with Validation Monitoring
-    # =================================================================
-    classifier = ECGClassifier(encoder, emb_dim=128, num_classes=2).to(device)
-
-    best_metric = train_classifier_with_comparison(
-        model=classifier,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device,
-        epochs=epochs,
-        lr=1e-4,
-        eval_every=eval_every
-    )
-
-    # =================================================================
-    # 4. Final Evaluation on Official Test Set
-    # =================================================================
-    classifier.eval()
-    test_metrics = evaluate_metrics(classifier, test_loader, device)
-    
-    # Cleanup GPU memory
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    return test_metrics
-    
 
 def train_classifier_with_comparison(
                 model,
                 train_loader,
                 val_loader,
                 device="cpu",
-                epochs=40,
+                epochs=60,
                 lr=1e-4,
-                eval_every=10, 
+                eval_every=20, 
                 metric_for_lr="f1_score",
                 
                 min_delta=1e-3,
@@ -716,6 +596,110 @@ def train_classifier_with_comparison(
            
     return best_metric
 
+
+def official_evaluation(
+    encoder, 
+    labeled_csv, 
+    labeled_root, 
+    device,
+    test_fold=[10],  # Official test fold
+    # num_folds=5,
+    batch_size=64,
+    epochs=60,
+    eval_every=20
+):
+   
+    """Optimized 5-fold cross-validation with PTB-XL best practices."""
+    # Official PTB-XL splits
+    TRAIN_FOLDS = list(range(1, 9))  # Folds 1-8
+    VAL_FOLD = [9]
+    TEST_FOLD = test_fold
+
+   
+    # =================================================================
+    # 1. Prepare Official Splits
+    # =================================================================
+    # Training data (folds 1-8)
+    # Create full dataset once
+    train_ds = PTBXLDataset(
+        csv_path=labeled_csv,
+        root_dir=labeled_root,
+        use_lr=True,
+        folds=TRAIN_FOLDS
+    )
+    # Validation data (fold 9)
+    val_ds = PTBXLDataset(
+        csv_path=labeled_csv,
+        root_dir=labeled_root,
+        use_lr=True,
+        folds=[9]  # Official validation fold
+    )
+    # Test data (fold 10)
+    test_ds = PTBXLDataset(
+        csv_path=labeled_csv,
+        root_dir=labeled_root,
+        use_lr=True,
+        folds=TEST_FOLD
+    )
+    # =================================================================
+    # 2. Create DataLoaders with Optimal Parameters
+    # =================================================================
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size*2,
+        shuffle=False,
+        num_workers=2
+    )
+    
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size*2,
+        shuffle=False,
+        num_workers=2
+    )
+
+    # After dataset creation
+    wandb.log({
+        "train_class_dist": wandb.Histogram(train_ds.df['label']),
+        "test_class_dist": wandb.Histogram(test_ds.df['label'])
+    })
+
+     # =================================================================
+    # 3. Train Classifier with Validation Monitoring
+    # =================================================================
+    classifier = ECGClassifier(encoder, emb_dim=128, num_classes=2).to(device)
+
+    best_metric = train_classifier_with_comparison(
+        model=classifier,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        epochs=epochs,
+        lr=1e-4,
+        eval_every=eval_every
+    )
+
+    # =================================================================
+    # 4. Final Evaluation on Official Test Set
+    # =================================================================
+    classifier.eval()
+    test_metrics = evaluate_metrics(classifier, test_loader, device)
+    
+    # Cleanup GPU memory
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return test_metrics
+    
 def evaluate_metrics(model, dataloader, device='cpu'):
     """
     Evaluates the given model on the provided dataloader and computes
@@ -757,6 +741,7 @@ def evaluate_metrics(model, dataloader, device='cpu'):
 
 
 
+
 #
 # --- MAIN PIPELINE ---
 if __name__ == "__main__":
@@ -765,20 +750,21 @@ if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
 
     # Phase 1: MoCo Pre-training
-    wandb.init(project="ECG-MoCo-final_100", name="pretrain")
+    wandb.init(project="ECG-MoCo-finalumap_100", name="pretrain")
     # Load unlabeled data using official training folds
     unlabeled_ds = PTBXLDataset(
         csv_path='../data/ptbxl_database.csv',
         root_dir='../data',
-        use_lr=False,
+        use_lr=True,
         folds=list(range(1,9)),  # Official unlabeled folds
         is_unlabeled=True
     )
+    # print("is_unlabeled for unlabeled_ds:", unlabeled_ds.is_unlabeled)
     unlabeled_df, skipped = load_and_segment_signals_1d_no_folder_limit(
        
         csv_file='../data/ptbxl_database.csv',
         base_dir='../data',
-        filename_col='filename_hr',
+        filename_col='filename_lr',
         max_files=5000,
         segment_length=1000,
         fs=125.0,
@@ -802,6 +788,7 @@ if __name__ == "__main__":
         ecg_tensor = ecg_tensor,
         epochs = 100,
         batch_size = 32,
+        viz_methods = ['umap'],
         device = device
     )
     # ... training code ...
@@ -810,26 +797,28 @@ if __name__ == "__main__":
     # Phase 2: Fine-tuning 
     # Official supervised splits
     wandb.init(
-        project="ECG-MoCo-final_100",
+        project="ECG-MoCo-finalumap_100",
         name="finetune",
         config={
             "phase": "supervised_fine_tuning",
-            "epochs": 40,
+            "epochs": 100,
             "lr": 1e-4,
             "batch_size": 64,
-            "eval_every": 10
+            "eval_every": 20
         }
     )
 
     train_ds = PTBXLDataset(
         csv_path='../data/ptbxl_database.csv',
         root_dir='../data',
+        use_lr=True,
         folds=list(range(1,9)),  # Official training folds
         is_unlabeled=False  # Default behavior
     )
     val_ds = PTBXLDataset(
         csv_path='../data/ptbxl_database.csv',
         root_dir='../data',
+        use_lr=True,
         folds=[9]  # Official validation fold
     )
         # Create DataLoaders with proper parameters
@@ -860,9 +849,9 @@ if __name__ == "__main__":
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        epochs=40,
+        epochs=60,
         lr=1e-4,
-        eval_every=10
+        eval_every=20
     )
 
     # Log final metrics
@@ -876,7 +865,7 @@ if __name__ == "__main__":
     
 
     # Phase 3: Evaluation
-    wandb.init(project="ECG-MoCo-final_100", name="evaluation")
+    wandb.init(project="ECG-MoCo-finalumap_100", name="evaluation")
     final_metrics = official_evaluation(
         encoder=moco_model.encoder_q,
         labeled_csv='../data/ptbxl_database.csv',
@@ -884,7 +873,7 @@ if __name__ == "__main__":
         device=device,
         test_fold=[10],  # Official test fold
         batch_size=64,
-        epochs=40
+        epochs=60
     )
     
     wandb.log(final_metrics)

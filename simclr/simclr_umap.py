@@ -27,7 +27,7 @@ def log_umap_projections(model, loader, device):
             else:
                 ecg = batch
                 lbl = torch.zeros(ecg.size(0), dtype=torch.long)
-            emb = model.encoder_q(ecg.to(device)).cpu()
+            emb = model.encoder(ecg.to(device)).cpu()
             embeddings.append(emb)
             labels.append(lbl)
     
@@ -36,6 +36,9 @@ def log_umap_projections(model, loader, device):
     
     # Handle NaN/Inf
     if np.isnan(embeddings).any():
+        nan_percentage = np.isnan(embeddings).mean() * 100
+        wandb.log({"nan_percentage_in_embeddings": nan_percentage})
+        print(f"NaN detected in {nan_percentage:.2f}% of embeddings. Replacing with defaults.")
         embeddings = np.nan_to_num(embeddings)
     
     reducer = umap.UMAP(n_components=2, metric='cosine')
