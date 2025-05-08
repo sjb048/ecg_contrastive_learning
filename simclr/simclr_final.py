@@ -29,28 +29,6 @@ from simclr_umap import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 log_rows = []  # For saving to CSV
-# --- WAVELET DENOISING FUNCTION (optional) ---
-def wavelet_denoise(ecg_signal_1d, wavelet='db4', level=2, mode='soft'):
-    coeffs = pywt.wavedec(ecg_signal_1d, wavelet, level=level)
-    detail_coeffs = coeffs[1:]
-    detail_array = np.concatenate([np.abs(dc) for dc in detail_coeffs]) if detail_coeffs else np.array([])
-    if len(detail_array) == 0:
-        return ecg_signal_1d
-    median_abs = np.median(detail_array)
-    sigma = median_abs / 0.6745
-    n = len(ecg_signal_1d)
-    threshold = sigma * np.sqrt(2 * np.log(n)) if n > 1 else 0
-    new_coeffs = [coeffs[0]]
-    for dc in coeffs[1:]:
-        dc_t = pywt.threshold(dc, threshold, mode=mode)
-        new_coeffs.append(dc_t)
-    denoised = pywt.waverec(new_coeffs, wavelet)
-    if len(denoised) > n:
-        denoised = denoised[:n]
-    elif len(denoised) < n:
-        denoised = np.pad(denoised, (0, n - len(denoised)), mode='constant')
-    return denoised
-
 
 
 # --- 1D TRANSFORMS for SimCLR augmentations ---
@@ -233,10 +211,6 @@ class SimCLRTrainer:
         negatives = similarity_matrix[mask].view(2*batch_size, -1)
         logits = torch.cat([positives.unsqueeze(1), negatives], dim=1)
         labels = torch.zeros(2*batch_size, dtype=torch.long).to(self.args.device)
-        
-
-        # loss = self.criterion(logits, labels)
-        # return loss
         return logits, labels
     
            
@@ -366,46 +340,6 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     # Switch back to training mode
     model.train()
 
-# --- Simclr TRAINING FUNCTIONS ---
-class AverageMeter:
-    def __init__(self, name, fmt=":f"):
-        self.name = name
-        self.fmt = fmt
-        self.reset()
-    def reset(self):
-        self.val = 0; self.avg = 0; self.sum = 0; self.count = 0
-    def update(self, val, n=1):
-        self.val = val; self.sum += val * n; self.count += n; self.avg = self.sum / self.count
-    def __str__(self):
-        fmtstr = "{name} {val" + self.fmt + "} ({avg" + self.fmt + "})"
-        return fmtstr.format(**self.__dict__)
-
-class ProgressMeter:
-    def __init__(self, num_batches, meters, prefix=""):
-        self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
-        self.meters = meters
-        self.prefix = prefix
-    def display(self, batch):
-        entries = [self.prefix + self.batch_fmtstr.format(batch)]
-        entries += [str(meter) for meter in self.meters]
-        print("\t".join(entries))
-    def _get_batch_fmtstr(self, num_batches):
-        num_digits = len(str(num_batches))
-        fmt = "{:" + str(num_digits) + "d}"
-        return "[" + fmt + "/" + fmt.format(num_batches) + "]"
-
-def accuracy(output, target, topk=(1,)):
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
-        res = []
-        for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
 
 # --- DATA LOADING FOR UNLABELED DATA (for MoCo Pre-training) ---
 
