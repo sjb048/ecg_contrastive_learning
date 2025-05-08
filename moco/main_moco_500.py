@@ -569,6 +569,7 @@ def train_classifier_with_comparison(
             model.eval()
             val_metrics = evaluate_metrics(model, val_loader, device=device)
             current_val_accuracy = val_metrics['accuracy']
+            print(f"Recall (sensitivity): {metrics['recall']:.3f}")
             wandb.log({
                 "val_acc_20": val_metrics['accuracy'],
                 "val_prec_20": val_metrics['precision'],
