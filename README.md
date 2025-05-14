@@ -24,6 +24,7 @@ Installation
 
 # 1. Clone the repo
 $ git clone https://github.com/sjb048/ecg_contrastive_learning.git
+
 $ cd ecg_contrastive_learning
 
 # 2A. Conda (recommended)
