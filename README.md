@@ -29,10 +29,12 @@ $ cd ecg_contrastive_learning
 
 # 2A. Conda (recommended)
 $ conda env create -f environment.yml
+
 $ conda activate ecg-contrastive
 
 # 2B. Pip (alternative)
 $ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
 $ pip install -r requirements.txt  # minimal: torch torchvision torchaudio pandas scikit-learn wfdb scipy pywavelets
 
 Dataset
