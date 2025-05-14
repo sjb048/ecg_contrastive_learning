@@ -349,7 +349,7 @@ def train_moco_1d(model, ecg_tensor, epochs, batch_size, device='cuda',
     torch.save(model.state_dict(), 'improved_moco_ecg_model_test.pth')
     print("MoCo model saved to 'improved_moco_ecg_model_test.pth'.")
 
-def evaluate_moco(model, ecg_tensor, batch_size=32, device='cuda'):
+def evaluate_moco(model, ecg_tensor, batch_size=64, device='cuda'):
     model.eval()
     dataloader = create_ecg_dataloader(ecg_tensor, batch_size=batch_size, shuffle=False)
     all_embeddings = []
@@ -412,7 +412,7 @@ def visualize_embeddings(model, ecg_tensor, epoch, batch_size, device, viz_metho
     model.train()
 
 
-def create_ecg_dataloader(ecg_tensor, batch_size=32, shuffle=True):
+def create_ecg_dataloader(ecg_tensor, batch_size=64, shuffle=True):
     dataset = TensorDataset(ecg_tensor)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=True )
 
@@ -787,7 +787,7 @@ if __name__ == "__main__":
         model = moco_model,
         ecg_tensor = ecg_tensor,
         epochs = 100,
-        batch_size = 32,
+        batch_size = 64,
         viz_methods = ['umap'],
         device = device
     )
