@@ -738,7 +738,7 @@ if __name__ == '__main__':
     wandb.init(project='simclr_runimp', name='finetune')
 
     # Load dataset
-    train_ds = PTBXLDataset(args.csv, args.data_dir, use_lr=False, folds=[1,2,3,4,5,6,7,8])
+    train_ds = PTBXLDataset(args.csv, args.data_dir, use_lr=False, folds=list(range(1,9)))
     val_ds = PTBXLDataset(args.csv, args.data_dir, use_lr=False, folds=[9])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
