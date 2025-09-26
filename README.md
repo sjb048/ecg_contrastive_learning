@@ -39,6 +39,7 @@ $ pip install -r requirements.txt  # minimal: torch torchvision torchaudio panda
 
 This project is benchmarked using the PTB-XL ECG dataset.
 Make sure you have the data downloaded and stored in the expected directory (specify path) before running experiments.
+Link https://physionet.org/content/ptb-xl/1.0.3/
 
 # 🧪 Usage & Examples
 Training
