@@ -56,17 +56,20 @@ You can also run with different augmentations or backbones by passing in configu
 All major parameters (learning rate, batch size, augmentation settings, backbone architecture) are exposed in YAML config files under configs/.
 You can create your own or modify existing ones as needed.
 
-# 🧩 Project Structure
+
+## 🧩 Project Structure
+
+```bash
 ecg_contrastive_learning/
-├── configs/ # YAML config files for experiments
-├── data/ # Data loading scripts / dataset interface
-├── models/ # Model architectures and contrastive modules
-├── augmentations/ # ECG augmentation functions
-├── train.py # Training entrypoint
-├── eval.py # Evaluation / downstream code
-├── environment.yml # Conda environment setup
-├── requirements.txt # Python dependencies
-├── README.md # Project documentation
+├── configs/          # YAML config files for experiments
+├── data/             # Data loading scripts / dataset interface
+├── models/           # Model architectures and contrastive modules
+├── augmentations/    # ECG augmentation functions
+├── train.py          # Training entrypoint
+├── eval.py           # Evaluation / downstream code
+├── environment.yml   # Conda environment setup
+├── requirements.txt  # Python dependencies
+└── README.md         # Project documentation
 
 # 💡 Tips & Notes
 
