@@ -35,12 +35,12 @@ $ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\a
 
 $ pip install -r requirements.txt  # minimal: torch torchvision torchaudio pandas scikit-learn wfdb scipy pywavelets
 
-Dataset
+ # Dataset
 
 This project is benchmarked using the PTB-XL ECG dataset.
 Make sure you have the data downloaded and stored in the expected directory (specify path) before running experiments.
 
-🧪 Usage & Examples
+# 🧪 Usage & Examples
 Training
 python train.py --config configs/simclr.yaml
 
@@ -51,7 +51,7 @@ Evaluation / Downstream classification
 python eval.py --model_path path/to/checkpoint --dataset ptbxl
 
 You can also run with different augmentations or backbones by passing in configuration files.
-🛠️ Configuration
+# 🛠️ Configuration
 All major parameters (learning rate, batch size, augmentation settings, backbone architecture) are exposed in YAML config files under configs/.
 You can create your own or modify existing ones as needed.
 
@@ -65,7 +65,7 @@ ecg_contrastive_learning/
 ├── environment.yml / requirements.txt
 ├── README.md /# Project documentation
 
-💡 Tips & Notes
+# 💡 Tips & Notes
 
 Make sure to fix random seeds for reproducibility.
 
