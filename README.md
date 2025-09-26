@@ -18,7 +18,7 @@ Features:
 - Clean, modular PyTorch code: easy to swap backbone architectures or contrastive objectives.  
 - Reproducible experimental pipelines for ECG tasks on PTB-XL dataset.
 
-Installation
+# Installation
 
 # 1. Clone the repo
 $ git clone https://github.com/sjb048/ecg_contrastive_learning.git
@@ -46,9 +46,9 @@ python train.py --config configs/simclr.yaml
 
 or for MoCo:
 
-python train.py --config configs/moco.yaml
+python train.py -config configs/moco.yaml
 Evaluation / Downstream classification
-python eval.py --model_path path/to/checkpoint --dataset ptbxl
+python eval.py -model_path path/to/checkpoint -dataset ptbxl
 
 You can also run with different augmentations or backbones by passing in configuration files.
 # 🛠️ Configuration
